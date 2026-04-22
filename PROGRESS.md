@@ -60,6 +60,7 @@ memory of prior sessions — depend on this being specific and accurate.
 | --- | --- | --- | --- |
 | 1 | ✅ Done | Scaffold + Routes | `requirements.txt`, `config.py`, `models/`, `storage/`, `main.py`, `routes/projects.py`, `routes/upload.py` |
 | 2 | ✅ Done (merged into 1) | Routes | merged with Session 1 |
+| 2b | ✅ Done | Pivot: Tauri desktop app, eliminate file copying | `routes/upload.py`, `frontend/src-tauri/`, `ClipSelector.jsx`, `client.js` |
 | 3 | Next | Pipeline: Ingest | `pipeline/proxy.py`, `pipeline/whisper_transcribe.py` |
 | 4 | | Pipeline: Pass 1 | `pipeline/pass1_clip_analysis.py` (frames + Claude call) |
 | 5 | | Pipeline: Filler + B-roll | `pipeline/filler_removal.py`, `pipeline/broll_overlay.py` |
@@ -123,6 +124,79 @@ memory of prior sessions — depend on this being specific and accurate.
 2. Verify frontend builds: `cd frontend && npm install && npm run dev`
 3. Write the missing `docs/context/` files (ARCHITECTURE, PIPELINE, AI_PROMPTS, TECH_STACK) — required reference for Sessions 3–8
 4. Then begin Session 3: `pipeline/proxy.py` (FFmpeg proxy generation) + `pipeline/whisper_transcribe.py`
+
+---
+
+### Session 2b — 2026-04-22 (Tauri pivot)
+
+**Files changed:**
+
+- `backend/routes/upload.py` — replaced multipart `POST /clips` with `POST /clips/register` (accepts `{file_paths: [...]}`, no copying); `delete_clip` now only removes derived files (proxy, transcript, frames) — never touches `original_path`
+- `frontend/src/api/client.js` — replaced `uploadClips()` with `registerClips(projectId, filePaths)`
+- `frontend/src/components/upload/ClipSelector.jsx` — new component using Tauri `dialog.open()` for native file picker
+- `frontend/src/App.jsx` — `UploadStep` now uses `ClipSelector`; auto-creates project on mount; Continue disabled until clips registered
+- `frontend/src-tauri/` — Tauri v2 scaffolding: `tauri.conf.json`, `Cargo.toml`, `build.rs`, `src/main.rs`, `src/lib.rs`, `capabilities/default.json`
+- `frontend/vite.config.js` — added `strictPort: true`, `host: 'localhost'`, `clearScreen: false` (Tauri requirements)
+- `frontend/package.json` — added `@tauri-apps/api`, `@tauri-apps/cli`, `@tauri-apps/plugin-dialog`, `concurrently`; added `dev:backend` and `dev:all` scripts
+- `.gitignore` — added `frontend/src-tauri/target/`
+- `backend/main.py` — added `python-dotenv` `load_dotenv()` at startup so `backend/.env` is loaded automatically
+- `backend/config.py` — `FileNotFoundError` → `OSError` in keychain subprocess calls (broader compatibility)
+- `backend/models/{project,clip,edit_plan}.py` — removed `from __future__ import annotations` (caused SQLModel forward-ref resolution issues)
+- `backend/routes/projects.py` — added `response_model=None` to DELETE endpoint (suppresses FastAPI 204 schema warning)
+
+**Decisions:**
+
+- Files reference in-place via `original_path` (the user's real filesystem path) — no copy, no symlink. Pipeline reads `original_path` directly when generating proxies, which is correct.
+- `ClipStatus.uploaded` enum value kept as-is (renaming would need a migration; semantics are close enough)
+- Backend subprocess management deferred — in dev, run the FastAPI backend in a separate terminal. Bundled sidecar (PyInstaller) is a v2 task.
+
+**Blockers:**
+
+- **Rust not installed** — `rustup` must be installed before `npx tauri dev` will work. Install instructions below.
+- `docs/context/` files still missing (carried over from Session 1 blocker)
+
+**Next session:**
+
+1. Install Rust + Linux prerequisites (see "Running the App" below), then verify `npx tauri dev` launches the window
+2. Write the missing `docs/context/` files (ARCHITECTURE, PIPELINE, AI_PROMPTS, TECH_STACK)
+3. Begin Session 3: `pipeline/proxy.py` (FFmpeg proxy generation from `original_path`) + `pipeline/whisper_transcribe.py`
+
+---
+
+## Running the App (Tauri)
+
+**Prerequisites (one-time):**
+
+```bash
+# 1. Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# 2. Install Linux WebKit2GTK (required by Tauri on Linux/WSL2)
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+
+# 3. Install Python deps
+cd backend && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+```
+
+**Dev workflow (two terminals):**
+
+```bash
+# Terminal 1 — backend
+cd backend && source .venv/bin/activate
+CREATORCUT_ANTHROPIC_API_KEY=sk-ant-... uvicorn main:app --port 8000
+
+# Terminal 2 — Tauri app
+cd frontend && npx tauri dev
+```
+
+**What changed from the old workflow:**
+
+| Before | After |
+| --- | --- |
+| `npm run dev` | `npx tauri dev` |
+| Files dragged into browser upload zone | Native OS file picker — files stay in place |
+| Files copied to `~/.creatorcut/projects/{id}/clips/` | `original_path` points to user's file; nothing copied |
 
 ---
 

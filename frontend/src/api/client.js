@@ -64,13 +64,8 @@ export const api = {
   listClips: (projectId) =>
     request('GET', `/projects/${projectId}/clips`),
 
-  uploadClips: (projectId, files) => {
-    const form = new FormData()
-    for (const file of files) {
-      form.append('files', file)
-    }
-    return request('POST', `/projects/${projectId}/clips`, form)
-  },
+  registerClips: (projectId, filePaths) =>
+    request('POST', `/projects/${projectId}/clips/register`, { file_paths: filePaths }),
 
   deleteClip: (projectId, clipId) =>
     request('DELETE', `/projects/${projectId}/clips/${clipId}`),

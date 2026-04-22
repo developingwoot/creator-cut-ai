@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { api } from './api/client'
+import ClipSelector from './components/upload/ClipSelector'
 
 const STEPS = [
   { id: 1, label: 'Upload' },
@@ -41,20 +43,20 @@ function StepIndicator({ currentStep }) {
   )
 }
 
-function UploadStep({ onNext }) {
+function UploadStep({ projectId, onNext }) {
+  const [clips, setClips] = useState([])
+
   return (
     <div className="flex flex-col items-center gap-6 py-16">
-      <h2 className="text-2xl font-bold text-gray-800">Upload Your Footage</h2>
+      <h2 className="text-2xl font-bold text-gray-800">Select Your Footage</h2>
       <p className="text-gray-500 max-w-md text-center">
-        Drop your raw video clips here. Supported formats: MP4, MOV, MKV, AVI, MXF, M4V.
+        Pick your raw video clips from disk. Files stay where they are — nothing is copied.
       </p>
-      <div className="w-full max-w-lg border-2 border-dashed border-gray-300 rounded-xl p-12 flex flex-col items-center gap-4 bg-gray-50 hover:bg-gray-100 cursor-pointer transition">
-        <div className="text-4xl text-gray-400">↑</div>
-        <p className="text-gray-500">Click to browse or drag files here</p>
-      </div>
+      <ClipSelector projectId={projectId} onRegistered={setClips} />
       <button
         onClick={onNext}
-        className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold"
+        disabled={clips.length === 0}
+        className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold disabled:bg-indigo-300 disabled:cursor-not-allowed"
       >
         Continue
       </button>
@@ -178,6 +180,14 @@ const STEP_COMPONENTS = [UploadStep, BriefStep, AnalysisStep, ReviewStep, Export
 
 export default function App() {
   const [step, setStep] = useState(1)
+  const [projectId, setProjectId] = useState(null)
+  const creatingProject = useRef(false)
+
+  useEffect(() => {
+    if (creatingProject.current) return
+    creatingProject.current = true
+    api.createProject('New Project').then((project) => setProjectId(project.id))
+  }, [])
 
   const StepComponent = STEP_COMPONENTS[step - 1]
 
@@ -191,6 +201,7 @@ export default function App() {
 
       <main className="max-w-3xl mx-auto px-6">
         <StepComponent
+          projectId={projectId}
           onNext={() => setStep((s) => Math.min(s + 1, STEPS.length))}
           onBack={() => setStep((s) => Math.max(s - 1, 1))}
         />

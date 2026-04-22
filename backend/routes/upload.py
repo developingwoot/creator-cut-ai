@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import os
+import json
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from config import settings
@@ -14,12 +16,17 @@ from exceptions import InvalidClipError, PathTraversalError, UnsupportedCodecErr
 from models.clip import Clip, ClipRead, ClipStatus
 from models.project import Project, ProjectStatus
 from storage.database import get_session
-from storage.local import clip_path, ensure_project_dirs
+from storage.local import (
+    assert_safe_filename,
+    ensure_project_dirs,
+    frames_subdir,
+    proxy_path,
+    transcript_path,
+)
 
 router = APIRouter(prefix="/projects", tags=["upload"])
 
 _SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mxf", ".m4v"}
-_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 
 def _probe_clip(path: Path) -> dict:
@@ -38,7 +45,6 @@ def _probe_clip(path: Path) -> dict:
     if result.returncode != 0:
         raise InvalidClipError(path.name, f"ffprobe failed: {result.stderr.strip()}")
 
-    import json
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -52,7 +58,6 @@ def _probe_clip(path: Path) -> dict:
     stream = streams[0]
     codec = stream.get("codec_name", "unknown")
 
-    # Reject obviously unsupported codecs
     if codec in {"mjpeg", "png", "gif"}:
         raise UnsupportedCodecError(path.name, codec)
 
@@ -60,7 +65,6 @@ def _probe_clip(path: Path) -> dict:
     height = stream.get("height")
     resolution = f"{width}x{height}" if width and height else None
 
-    # r_frame_rate is a fraction string like "30000/1001"
     fps_str = stream.get("r_frame_rate", "0/1")
     try:
         num, den = fps_str.split("/")
@@ -80,12 +84,17 @@ def _probe_clip(path: Path) -> dict:
     }
 
 
-@router.post("/{project_id}/clips", response_model=list[ClipRead], status_code=201)
-async def upload_clips(
+class ClipRegisterRequest(BaseModel):
+    file_paths: list[str]
+
+
+@router.post("/{project_id}/clips/register", response_model=list[ClipRead], status_code=201)
+def register_clips(
     project_id: str,
-    files: list[UploadFile],
+    body: ClipRegisterRequest,
     session: Session = Depends(get_session),
 ) -> list[Clip]:
+    """Register clips by their existing paths on disk. No copying — files stay where they are."""
     project = session.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -93,57 +102,53 @@ async def upload_clips(
     if project.status not in (ProjectStatus.created, ProjectStatus.uploading):
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot upload clips — project is in '{project.status}' state",
+            detail=f"Cannot register clips — project is in '{project.status}' state",
         )
 
-    # Count existing clips to determine order offset
     existing = session.exec(select(Clip).where(Clip.project_id == project_id)).all()
     order_offset = len(existing)
 
+    # Create derived-file directories (clips/ dir is no longer used)
     ensure_project_dirs(settings.base_dir, project_id)
     created_clips: list[Clip] = []
 
-    for i, upload in enumerate(files):
-        filename = upload.filename or f"clip_{i}"
-        ext = Path(filename).suffix.lower()
+    for i, file_path_str in enumerate(body.file_paths):
+        path = Path(file_path_str)
 
+        if not path.exists():
+            raise HTTPException(status_code=422, detail=f"File not found: {file_path_str}")
+
+        if not path.is_file():
+            raise HTTPException(status_code=422, detail=f"Not a file: {file_path_str}")
+
+        ext = path.suffix.lower()
         if ext not in _SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=422,
-                detail=f"'{filename}' has unsupported extension '{ext}'. "
+                detail=f"'{path.name}' has unsupported extension '{ext}'. "
                        f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}",
             )
 
         try:
-            dest = clip_path(settings.base_dir, project_id, filename)
+            assert_safe_filename(path.name)
         except PathTraversalError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-        # Write file to disk in chunks
         try:
-            with dest.open("wb") as f:
-                while chunk := await upload.read(_CHUNK_SIZE):
-                    f.write(chunk)
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to write '{filename}': {exc}")
-
-        # Probe the saved file
-        try:
-            probe = _probe_clip(dest)
+            probe = _probe_clip(path)
         except (InvalidClipError, UnsupportedCodecError) as exc:
-            dest.unlink(missing_ok=True)
             raise HTTPException(status_code=422, detail=str(exc))
 
         clip = Clip(
             project_id=project_id,
-            filename=filename,
-            original_path=str(dest),
+            filename=path.name,
+            original_path=str(path.resolve()),
             order=order_offset + i,
             **probe,
         )
         session.add(clip)
         created_clips.append(clip)
-        logger.info(f"Uploaded clip '{filename}' to project {project_id}")
+        logger.info(f"Registered clip '{path.name}' for project {project_id} at {path.resolve()}")
 
     project.status = ProjectStatus.uploading
     project.updated_at = datetime.utcnow()
@@ -155,7 +160,7 @@ async def upload_clips(
     return created_clips
 
 
-@router.delete("/{project_id}/clips/{clip_id}", status_code=204)
+@router.delete("/{project_id}/clips/{clip_id}", status_code=204, response_model=None)
 def delete_clip(
     project_id: str,
     clip_id: str,
@@ -175,11 +180,19 @@ def delete_clip(
             detail=f"Cannot delete clips — project is in '{project.status}' state",
         )
 
-    # Remove the file from disk; don't fail if already gone
-    original = Path(clip.original_path)
-    if original.exists():
-        original.unlink()
-        logger.info(f"Deleted clip file {original}")
+    # Delete derived files only — original_path is the user's file; never touch it
+    for derived in (
+        proxy_path(settings.base_dir, project_id, clip_id),
+        transcript_path(settings.base_dir, project_id, clip_id),
+    ):
+        if derived.exists():
+            derived.unlink()
+            logger.info(f"Deleted derived file {derived}")
+
+    frames = frames_subdir(settings.base_dir, project_id, clip_id)
+    if frames.exists():
+        shutil.rmtree(frames)
+        logger.info(f"Deleted frames directory {frames}")
 
     session.delete(clip)
     session.commit()

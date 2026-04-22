@@ -69,7 +69,7 @@ def update_project(
     return project
 
 
-@router.delete("/{project_id}", status_code=204)
+@router.delete("/{project_id}", status_code=204, response_model=None)
 def delete_project(project_id: str, session: Session = Depends(get_session)) -> None:
     project = session.get(Project, project_id)
     if not project:
