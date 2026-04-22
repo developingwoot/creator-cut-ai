@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlmodel import Column, Field, JSON, Relationship, SQLModel
 
 if TYPE_CHECKING:
@@ -43,6 +43,34 @@ class Clip(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     project: "Project" = Relationship(back_populates="clips")
+
+
+class KeyMoment(BaseModel):
+    start: float
+    end: float
+    description: str
+
+
+class FillerSpan(BaseModel):
+    start: float
+    end: float
+    word: str
+
+
+class ClipAnalysis(BaseModel):
+    """Validated output of Pass 1 — stored as clip.analysis in the database."""
+    quality_score: float
+    key_moments: list[KeyMoment] = []
+    filler_spans: list[FillerSpan] = []
+    b_roll_tags: list[str] = []
+    scene_mood: str
+    is_usable: bool
+    notes: str = ""
+
+    @field_validator("quality_score")
+    @classmethod
+    def _clamp_quality(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
 
 
 class ClipRead(BaseModel):

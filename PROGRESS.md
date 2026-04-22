@@ -63,9 +63,9 @@ memory of prior sessions — depend on this being specific and accurate.
 | 2b | ✅ Done | Pivot: Tauri desktop app, eliminate file copying | `routes/upload.py`, `frontend/src-tauri/`, `ClipSelector.jsx`, `client.js` |
 | 2c | ✅ Done | Context docs | all `docs/context/` files written |
 | 3 | ✅ Done | Pipeline: Ingest | `pipeline/proxy.py`, `pipeline/whisper_transcribe.py` |
-| 4 | | Pipeline: Pass 1 | `pipeline/pass1_clip_analysis.py` (frames + Claude call) |
+| 4 | ✅ Done | Pipeline: Pass 1 | `pipeline/pass1_clip_analysis.py` (frames + Claude call) |
 | 5 | | Pipeline: Filler + B-roll | `pipeline/filler_removal.py`, `pipeline/broll_overlay.py` |
-| 6 | | Pipeline: Pass 2 | `pipeline/pass2_edit_planning.py`, `pipeline/sound_design.py` |
+| 6 | ✅ Done (partial) | Pipeline: Pass 2 | `pipeline/pass2_edit_planning.py` (sound_design.py deferred to Stage 4) |
 | 7 | | Pipeline: Assembly | `pipeline/assembly.py` |
 | 8 | | Routes: Analyze + Assemble | `routes/analyze.py`, `routes/assemble.py` |
 | 9 | ✅ Done (merged into 1) | Frontend: Scaffold | merged with Session 1 |
@@ -231,6 +231,62 @@ cd frontend && npx tauri dev
    - Output: `ClipAnalysis` dict stored in `clip.analysis`
    - Concurrent across clips via `asyncio.gather` + semaphore
 2. Write tests for `pass1_clip_analysis.py` (mock Claude, real FFmpeg frames)
+
+---
+
+### Session 4 — 2026-04-22
+
+#### Completed
+
+- `backend/pipeline/prompts.py` — Python constants `PASS1_SYSTEM_PROMPT`, `PASS2_SYSTEM_PROMPT`, `FILLER_ONLY_SYSTEM_PROMPT` (canonical import for all pipeline stages; mirrors `docs/context/AI_PROMPTS.md`)
+- `backend/models/clip.py` — added `KeyMoment`, `FillerSpan`, `ClipAnalysis` Pydantic models; `ClipAnalysis.quality_score` validator clamps to [0.0, 1.0]
+- `backend/pipeline/pass1_clip_analysis.py` — `extract_frames()` (FFmpeg scene-change detection + uniform fallback + cap at 12); `analyse_clip()` (frames → Claude with cached system prompt, up to 2 retries on bad JSON or API error); `run_pass1()` (async gather + semaphore bounded by `settings.max_concurrent`)
+- `backend/tests/test_pipeline_pass1.py` — 24 tests, all green (real FFmpeg frames, mocked Claude)
+
+#### Decisions made
+
+- `_extract_uniform_frames` fallback uses `fps=0.5` (1 frame/2 s) for clips where scene detection finds 0 frames (common in synthetic test footage with no real scene changes)
+- Frame limit enforced post-extraction by `_downsample` (evenly distributed, preserves first and last frame)
+- `MagicMock(spec=anthropic.Anthropic)` cannot be used for the client mock — `messages` is an instance attribute not visible to `spec`. Tests use plain `MagicMock()` instead.
+- `ClipAnalysis` defined in `models/clip.py` (not inline in pipeline) so Pass 2 can import the type without creating a circular dependency
+
+#### Blockers / open questions
+
+- None
+
+#### Next session should
+
+1. Build `backend/pipeline/pass2_edit_planning.py`:
+   - Input: all `ClipAnalysis` results (from `clip.analysis`) + `StoryBrief` + SFX manifest IDs
+   - Claude call with `PASS2_SYSTEM_PROMPT` (cached), model `claude-opus-4-7`
+   - Output: `EditPlan` written to `edit_plans` table with `status = draft`
+   - Handle optional `rejection_feedback` for re-run path
+2. Write tests for `pass2_edit_planning.py` (mock Claude, validate `EditPlan` schema)
+
+---
+
+### Session 5 — 2026-04-22
+
+#### Completed
+
+- `backend/pipeline/pass2_edit_planning.py` — `run_pass2()` (single Claude Opus call: clip analyses + brief → EditPlan draft); `_load_sfx_ids()` (non-fatal manifest read); `_build_clip_analyses_json()`; `_build_user_message()` (brief + analyses + SFX list + optional rejection feedback block); `_parse_plan_response()` (validates segments via `EditSegment.model_validate`); `_call_claude()` (cached system prompt, up to 2 retries on bad JSON or API error)
+- `backend/tests/test_pipeline_pass2.py` — 26 tests, all green
+
+#### Decisions made
+
+- Caller pre-filters to successful analyses only — `run_pass2` accepts `list[tuple[Clip, ClipAnalysis]]` with no `None`s; raises `PipelineError` if list is empty
+- SFX manifest path resolved relative to `__file__` (`…/assets/sfx/manifest.json`); missing/malformed manifest logs a warning and passes an empty list to Claude — not fatal
+- `base_dir` parameter kept in signature (unused now) to match the pattern of other pipeline stages and for future lock/output path use
+
+#### Blockers / open questions
+
+- None
+
+#### Next session should
+
+1. Build `backend/pipeline/filler_removal.py` — for each approved `EditPlan` segment, trim `filler_spans` that fall within `source_start`–`source_end` using FFmpeg `select` + `asetpts`/`setpts`; write tests
+2. Build `backend/pipeline/broll_overlay.py` — splice B-roll clips at `b_roll_overlays` timecodes using FFmpeg `overlay` filter; write tests
+3. Build `backend/routes/analyze.py` — SSE route that runs ingest → pass1 → pass2, emits progress events, writes EditPlan to DB
 
 ---
 
