@@ -61,7 +61,8 @@ memory of prior sessions — depend on this being specific and accurate.
 | 1 | ✅ Done | Scaffold + Routes | `requirements.txt`, `config.py`, `models/`, `storage/`, `main.py`, `routes/projects.py`, `routes/upload.py` |
 | 2 | ✅ Done (merged into 1) | Routes | merged with Session 1 |
 | 2b | ✅ Done | Pivot: Tauri desktop app, eliminate file copying | `routes/upload.py`, `frontend/src-tauri/`, `ClipSelector.jsx`, `client.js` |
-| 3 | Next | Pipeline: Ingest | `pipeline/proxy.py`, `pipeline/whisper_transcribe.py` |
+| 2c | ✅ Done | Context docs | all `docs/context/` files written |
+| 3 | ✅ Done | Pipeline: Ingest | `pipeline/proxy.py`, `pipeline/whisper_transcribe.py` |
 | 4 | | Pipeline: Pass 1 | `pipeline/pass1_clip_analysis.py` (frames + Claude call) |
 | 5 | | Pipeline: Filler + B-roll | `pipeline/filler_removal.py`, `pipeline/broll_overlay.py` |
 | 6 | | Pipeline: Pass 2 | `pipeline/pass2_edit_planning.py`, `pipeline/sound_design.py` |
@@ -200,12 +201,45 @@ cd frontend && npx tauri dev
 
 ---
 
+### Session 3 — 2026-04-22
+
+#### Completed
+
+- `backend/pipeline/proxy.py` — `generate_proxy()`: FFmpeg 1280×720 H.264 proxy; idempotent; raises `ProxyGenerationError` with stderr on failure; caller persists status
+- `backend/pipeline/whisper_transcribe.py` — `transcribe_clip()`: faster-whisper local transcription; module-level model cache; idempotent (JSON cache); non-fatal on failure (returns `{"segments": []}`)
+- `backend/models/clip.py` — added `proxied` and `transcribed` to `ClipStatus` enum
+- `backend/exceptions.py` — fixed `ProxyGenerationError` and `FrameExtractionError` to extend `FFmpegError` (aligns with documented hierarchy; enables `stderr` kwarg)
+- `backend/tests/conftest.py` — `fixture_clip_path` session-scoped fixture (FFmpeg `testsrc`, 3s synthetic MP4)
+- `backend/tests/test_pipeline_ingest.py` — 11 tests, all green
+
+#### Decisions made
+
+- `ProxyGenerationError` and `FrameExtractionError` now extend `FFmpegError` (not `PipelineError`); the CLAUDE.md hierarchy diagram implied this but the code had them flat under `PipelineError`
+- Whisper model loading is deferred (import inside `_load_model`) and cached in a module-level dict keyed by model size — avoids loading on import and reuses across clips in the same process
+- `transcribe_clip` is non-fatal: catches all exceptions, logs, and returns `{"segments": []}` — consistent with PIPELINE.md spec
+
+#### Blockers / open questions
+
+- None
+
+#### Next session should
+
+1. Build `backend/pipeline/pass1_clip_analysis.py`:
+   - Frame extraction with FFmpeg `select='gt(scene,0.3)'` filter, max 12 frames, JPEG quality 85
+   - Claude call using `PASS1_SYSTEM_PROMPT` from `docs/context/AI_PROMPTS.md` with `cache_control: ephemeral`
+   - Model: `claude-sonnet-4-6`
+   - Output: `ClipAnalysis` dict stored in `clip.analysis`
+   - Concurrent across clips via `asyncio.gather` + semaphore
+2. Write tests for `pass1_clip_analysis.py` (mock Claude, real FFmpeg frames)
+
+---
+
 ## Known Issues
 
-*(Populated during development)*
+None yet — populated during development.
 
 ---
 
 ## Deferred Decisions
 
-*(Things that came up during development but deliberately punted — revisit before v2)*
+None yet — things that came up during development but were deliberately punted will be listed here for revisiting before v2.

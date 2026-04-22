@@ -13,7 +13,9 @@ if TYPE_CHECKING:
 class ClipStatus(str, Enum):
     uploaded = "uploaded"
     proxying = "proxying"
+    proxied = "proxied"
     transcribing = "transcribing"
+    transcribed = "transcribed"
     analyzing = "analyzing"
     analyzed = "analyzed"
     failed = "failed"

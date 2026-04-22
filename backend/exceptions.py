@@ -55,12 +55,12 @@ class InvalidClaudeResponseError(ClaudeAPIError):
         super().__init__(message, **kwargs)
 
 
-class ProxyGenerationError(PipelineError):
+class ProxyGenerationError(FFmpegError):
     """Proxy file could not be generated from the source clip."""
     pass
 
 
-class FrameExtractionError(PipelineError):
+class FrameExtractionError(FFmpegError):
     """Frame extraction failed — FFmpeg scene detection or sampling error."""
     pass
 
