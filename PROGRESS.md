@@ -69,9 +69,8 @@ memory of prior sessions — depend on this being specific and accurate.
 | 7 | ✅ Done | Pipeline: Assembly + Routes: Assemble + Frontend Brief/Analysis | `pipeline/assembly.py`, `routes/assemble.py`, `BriefForm.jsx`, `AnalysisProgress.jsx` |
 | 8 | ✅ Done (partial) | Routes: Analyze + Assemble | `routes/analyze.py` done; `routes/assemble.py` next |
 | 9 | ✅ Done (merged into 1) | Frontend: Scaffold | merged with Session 1 |
-| 10 | | Frontend: Upload + Brief | `components/upload/`, `components/brief/` |
-| 11 | | Frontend: Analysis + Review | `components/analysis/`, `components/timeline/` |
-| 12 | | Frontend: Export + Polish | `components/export/`, end-to-end test run |
+| 9 | ✅ Done | Smoke test + gap fixes + polish | `ClipSelector.jsx`, `AnalysisProgress.jsx`, `ReviewStep.jsx`, `App.jsx` |
+| 10 | | Full e2e test with real key + v0.1.0-alpha tag | real Anthropic key required |
 
 ---
 
@@ -357,9 +356,67 @@ cd frontend && npx tauri dev
 
 ---
 
+### Session 8 — 2026-04-23
+
+#### Completed
+
+- `frontend/src/components/timeline/ReviewStep.jsx` — fetches edit plan on mount; displays plan header (total duration, segment count, reasoning) + segment list (A/B-roll badge, clip ID, source window in m:ss, narration note, overlay/cue count badges); approve calls `api.approveEditPlan(projectId, true)` then advances; reject flow opens textarea (min 10 chars), calls `api.approveEditPlan(projectId, false, feedback)`, then shows rejection state with "Back to Analysis" button
+- `frontend/src/components/export/ExportStep.jsx` — idle/streaming/done/error states; "Start Assembly" triggers `api.assembleStream`; streaming shows live message + indeterminate pulse bar; done state shows output path in monospace box; error state shows message + "Try Again" reset; AbortController cleanup on unmount
+- `frontend/src/App.jsx` — removed inline placeholder `ReviewStep` and `ExportStep` functions; added imports; passed `projectId` to both new components
+- All 113 tests pass (no backend changes)
+
+#### Decisions made
+
+- ExportStep has no `onBack` prop — Step 5 is terminal; there's nothing meaningful to go back to once assembly starts
+- Rejection state in ReviewStep shows a static info message and "Back to Analysis" button (calls `onBack()` to Step 3) rather than auto-navigating — gives the user a moment to read the state before transitioning
+
+#### Blockers / open questions
+
+- None
+
+#### Next session should
+
+1. End-to-end smoke test: full 5-step flow from clip registration → brief → analysis SSE → plan review/approve → assembly SSE → output path displayed
+2. If smoke test reveals gaps: fix any wiring issues found
+3. Polish pass: empty/loading edge cases, error messages, responsive layout on narrow windows
+
+---
+
+### Session 9 — 2026-04-23
+
+#### Completed
+
+- **Smoke test** — API flow verified end-to-end: project creation, clip registration, SSE analyze stream (`proxying` → `transcribing` → `analyzing` → `error` with dummy key), and assemble SSE shape all match frontend expectations; frontend build clean
+- `frontend/src/components/upload/ClipSelector.jsx` — Tauri context detection via `window.__TAURI_INTERNALS__`; Tauri import made dynamic (`import()`) so it tree-shakes in browser builds; dev-mode fallback shows an amber textarea for entering absolute file paths, calls the same `api.registerClips` endpoint
+- `frontend/src/components/analysis/AnalysisProgress.jsx` — added `onBack` prop; error state now shows a "Back to Brief" button when `onBack` is provided
+- `frontend/src/components/timeline/ReviewStep.jsx` — added "Back" button to the main (non-rejected) action row, pushed approve/reject to the right
+- `frontend/src/App.jsx` — extracted `initProject()` with error handling and retry; added `projectError` state; project creation failure now shows a red banner with a Retry button instead of silently leaving the user stuck; `UploadStep` shows a spinner while project initialises and "Continue with N clip(s)" on the button; `AnalysisStep` passes `onBack={goBack}` down to `AnalysisProgress`
+- All 113 backend tests still pass
+
+#### Decisions made
+
+- Tauri import is dynamic (`await import('@tauri-apps/plugin-dialog')`) rather than a top-level import — avoids a build error when the package is absent and enables tree-shaking in browser builds
+- Dev-mode fallback is amber-coloured (not red, not the normal indigo) to visually distinguish it from the production Tauri picker and error states
+- Rejection feedback gap documented in Known Issues rather than fixed — fix requires threading feedback through `StoryBrief` → `analyze.py` → `run_pass2`, a non-trivial change deferred to v1.1
+
+#### Blockers / open questions
+
+- Full end-to-end test (Step 3 → Step 5) requires a real `ANTHROPIC_API_KEY` — pipeline fails at Pass 1 with a dummy key
+- Tauri on WSL2 requires X11/Wayland display forwarding; native desktop test deferred until non-WSL environment available
+
+#### Next session should
+
+1. Obtain a real Anthropic API key and run `ANTHROPIC_API_KEY=sk-ant-... uvicorn main:app --port 8000`, then complete the full 5-step browser smoke test with a real clip
+2. If that passes, do a commit and tag `v0.1.0-alpha`
+3. Optional: implement the rejection-feedback pipeline (see Known Issues) — add `rejection_feedback: str | None = None` to `StoryBrief`, thread it through `analyze.py` → `run_pass2`, and update the frontend to pass it via `analyzeStream`
+
+---
+
 ## Known Issues
 
-None yet — populated during development.
+- **Rejection feedback not used on re-run** — When a user rejects an edit plan with feedback and navigates back to the Analysis step, `routes/analyze.py` re-runs the full pipeline with the original brief only. The rejection feedback is stored in `EditPlan.status = rejected` but never forwarded to `run_pass2`. Fix: add `rejection_feedback: str | None` to `StoryBrief`, pass through `analyze.py` → `run_pass2`. Deferred to v1.1.
+
+- **Whisper model not pre-warmed** — First transcription in a session downloads/loads the model, which can take 30–60s with no user feedback. The "Transcribing" SSE message shows, but there is no sub-progress. Acceptable for v1.
 
 ---
 

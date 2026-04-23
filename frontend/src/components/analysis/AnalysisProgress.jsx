@@ -37,7 +37,7 @@ function CheckIcon() {
   )
 }
 
-export default function AnalysisProgress({ projectId, brief, onNext }) {
+export default function AnalysisProgress({ projectId, brief, onNext, onBack }) {
   const [currentStage, setCurrentStage] = useState(null)
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
@@ -129,8 +129,18 @@ export default function AnalysisProgress({ projectId, brief, onNext }) {
 
       {/* Error state */}
       {error && (
-        <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-600">
-          {error}
+        <div className="flex flex-col gap-3">
+          <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-600">
+            {error}
+          </div>
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="self-start px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+            >
+              Back to Brief
+            </button>
+          )}
         </div>
       )}
     </div>
