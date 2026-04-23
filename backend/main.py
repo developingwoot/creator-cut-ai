@@ -45,9 +45,11 @@ app.add_middleware(
 
 from routes.projects import router as projects_router
 from routes.upload import router as upload_router
+from routes.analyze import router as analyze_router
 
 app.include_router(projects_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
+app.include_router(analyze_router, prefix="/api")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

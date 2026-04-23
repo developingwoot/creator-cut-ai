@@ -64,10 +64,10 @@ memory of prior sessions — depend on this being specific and accurate.
 | 2c | ✅ Done | Context docs | all `docs/context/` files written |
 | 3 | ✅ Done | Pipeline: Ingest | `pipeline/proxy.py`, `pipeline/whisper_transcribe.py` |
 | 4 | ✅ Done | Pipeline: Pass 1 | `pipeline/pass1_clip_analysis.py` (frames + Claude call) |
-| 5 | | Pipeline: Filler + B-roll | `pipeline/filler_removal.py`, `pipeline/broll_overlay.py` |
+| 5 | ✅ Done | Pipeline: Filler + B-roll | `pipeline/filler_removal.py`, `pipeline/broll_overlay.py` |
 | 6 | ✅ Done (partial) | Pipeline: Pass 2 | `pipeline/pass2_edit_planning.py` (sound_design.py deferred to Stage 4) |
 | 7 | | Pipeline: Assembly | `pipeline/assembly.py` |
-| 8 | | Routes: Analyze + Assemble | `routes/analyze.py`, `routes/assemble.py` |
+| 8 | ✅ Done (partial) | Routes: Analyze + Assemble | `routes/analyze.py` done; `routes/assemble.py` next |
 | 9 | ✅ Done (merged into 1) | Frontend: Scaffold | merged with Session 1 |
 | 10 | | Frontend: Upload + Brief | `components/upload/`, `components/brief/` |
 | 11 | | Frontend: Analysis + Review | `components/analysis/`, `components/timeline/` |
@@ -287,6 +287,38 @@ cd frontend && npx tauri dev
 1. Build `backend/pipeline/filler_removal.py` — for each approved `EditPlan` segment, trim `filler_spans` that fall within `source_start`–`source_end` using FFmpeg `select` + `asetpts`/`setpts`; write tests
 2. Build `backend/pipeline/broll_overlay.py` — splice B-roll clips at `b_roll_overlays` timecodes using FFmpeg `overlay` filter; write tests
 3. Build `backend/routes/analyze.py` — SSE route that runs ingest → pass1 → pass2, emits progress events, writes EditPlan to DB
+
+---
+
+### Session 6 — 2026-04-23
+
+#### Completed
+
+- `backend/pipeline/filler_removal.py` — `remove_fillers(segment, clip, project_id, base_dir) -> Path`: trims filler spans (segment-relative, clamped) from a proxy using FFmpeg `select`/`aselect`/`setpts`/`asetpts`; falls back to simple trim when no fillers; writes to `outputs/{project_id}/segments/seg_{order:04d}.mp4`
+- `backend/pipeline/broll_overlay.py` — `apply_broll(segment, clips_by_id, project_id, base_dir, input_path) -> Path`: composites B-roll video over A-roll (keeps A-roll audio) using subprocess + dynamic `filter_complex`; non-fatal on missing/invalid placements; returns `input_path` unchanged if no valid placements
+- `backend/routes/analyze.py` — `POST /api/projects/{id}/analyze`: SSE route wiring the full ingest → pass1 → pass2 pipeline; emits `proxying`/`transcribing`/`analyzing`/`planning`/`done`/`error` events; acquires pipeline lock (try/finally release); persists `EditPlan` and `Project.status` to DB; handles per-clip proxy failures without halting the whole pipeline
+- `backend/main.py` — registered `analyze_router` under `/api`
+- `backend/tests/test_pipeline_filler.py` — 12 tests (unit: `_active_spans`; integration: real FFmpeg trim + filler removal)
+- `backend/tests/test_pipeline_broll.py` — 9 tests (unit: `_resolve_placements`; integration: real FFmpeg overlay)
+- `backend/tests/test_routes_analyze.py` — 7 tests (validation 404/422; SSE stage ordering; lock behavior; lock cleanup on success + error)
+- All 93 tests pass
+
+#### Decisions made
+
+- `_save_clip` in `analyze.py` reloads the Clip by PK in a fresh session instead of `session.add(detached_obj)` — avoids SQLAlchemy `DetachedInstanceError` caused by commit-triggered expiry on the in-flight clip object
+- `broll_overlay.py` uses `subprocess` (not ffmpeg-python) for the dynamic multi-input `filter_complex` — ffmpeg-python's API becomes unwieldy for N dynamically-chained overlay inputs
+- `remove_fillers` always writes a segment file even when there are no filler spans — gives assembly a consistent set of pre-trimmed per-segment files to concatenate
+- B-roll overlay timecodes are segment-relative (per DATA_MODELS.md spec); filler span timestamps are clip-absolute and converted to segment-relative in `_active_spans`
+
+#### Blockers / open questions
+
+- None
+
+#### Next session should
+
+1. Build `backend/pipeline/assembly.py` — concat all `segments/` files (with B-roll applied) into `outputs/output.mp4` using FFmpeg `concat` demuxer; write tests
+2. Build `backend/routes/assemble.py` — `POST /api/projects/{id}/assemble` + `GET /api/projects/{id}/plans` + `POST /api/projects/{id}/plans/{plan_id}/approve`; approve sets `EditPlan.status=approved` and triggers assembly
+3. Wire frontend Step 3 (Brief) → Step 4 (Analysis SSE progress view) to the new `/analyze` endpoint
 
 ---
 
