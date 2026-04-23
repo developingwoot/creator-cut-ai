@@ -70,12 +70,9 @@ export const api = {
   deleteClip: (projectId, clipId) =>
     request('DELETE', `/projects/${projectId}/clips/${clipId}`),
 
-  // Analysis (routes to be implemented in Session 8)
-  startAnalysis: (projectId) =>
-    request('POST', `/projects/${projectId}/analyze`),
-
-  getAnalysisStatus: (projectId) =>
-    request('GET', `/projects/${projectId}/analyze/status`),
+  // Analysis
+  startAnalysis: (projectId, brief) =>
+    request('POST', `/projects/${projectId}/analyze`, brief),
 
   // Edit plan
   getEditPlan: (projectId) =>
@@ -84,16 +81,66 @@ export const api = {
   approveEditPlan: (projectId, approved, feedback = null) =>
     request('POST', `/projects/${projectId}/edit-plan/approve`, { approved, feedback }),
 
-  // Assembly (Session 8)
-  startAssembly: (projectId) =>
-    request('POST', `/projects/${projectId}/assemble`),
+  // Fetch-based SSE for POST /analyze — caller receives events via onEvent callback.
+  // Pass an AbortSignal to cancel. Returns a promise that resolves when the stream ends.
+  analyzeStream: async (projectId, brief, onEvent, signal) => {
+    const res = await fetch(`${BASE}/projects/${projectId}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(brief),
+      signal,
+    })
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}))
+      throw new ApiError(json.detail || `HTTP ${res.status}`, res.status)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop()
+        for (const chunk of chunks) {
+          if (chunk.startsWith('data: ')) onEvent(JSON.parse(chunk.slice(6)))
+        }
+      }
+    } finally {
+      reader.cancel()
+    }
+  },
 
-  getAssemblyStatus: (projectId) =>
-    request('GET', `/projects/${projectId}/assemble/status`),
-
-  // SSE progress stream — returns an EventSource the caller must close
-  progressStream: (projectId) => {
-    return new EventSource(`${BASE}/projects/${projectId}/progress`)
+  // Fetch-based SSE for POST /assemble.
+  assembleStream: async (projectId, onEvent, signal) => {
+    const res = await fetch(`${BASE}/projects/${projectId}/assemble`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    })
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}))
+      throw new ApiError(json.detail || `HTTP ${res.status}`, res.status)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop()
+        for (const chunk of chunks) {
+          if (chunk.startsWith('data: ')) onEvent(JSON.parse(chunk.slice(6)))
+        }
+      }
+    } finally {
+      reader.cancel()
+    }
   },
 }
 

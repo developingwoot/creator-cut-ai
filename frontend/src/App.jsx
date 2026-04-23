@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api/client'
 import ClipSelector from './components/upload/ClipSelector'
+import BriefForm from './components/brief/BriefForm'
+import AnalysisProgress from './components/analysis/AnalysisProgress'
 
 const STEPS = [
   { id: 1, label: 'Upload' },
@@ -65,67 +67,25 @@ function UploadStep({ projectId, onNext }) {
 }
 
 function BriefStep({ onNext, onBack }) {
-  return (
-    <div className="flex flex-col items-center gap-6 py-16">
-      <h2 className="text-2xl font-bold text-gray-800">Story Brief</h2>
-      <p className="text-gray-500 max-w-md text-center">
-        Tell the AI what story you want to tell. The more context, the better the edit.
-      </p>
-      <div className="w-full max-w-lg flex flex-col gap-4">
-        <input
-          className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          placeholder="Video title"
-        />
-        <textarea
-          className="border rounded-lg px-4 py-2 w-full h-28 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          placeholder="Story summary — what happens, who's in it, what feeling should the viewer leave with?"
-        />
-        <input
-          className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          placeholder="Target duration (e.g. 8 minutes)"
-        />
-        <input
-          className="border rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          placeholder="Tone (e.g. upbeat, cinematic, documentary)"
-        />
-      </div>
-      <div className="flex gap-4">
-        <button onClick={onBack} className="px-6 py-2 border rounded-lg text-gray-600 hover:bg-gray-50 transition">
-          Back
-        </button>
-        <button
-          onClick={onNext}
-          className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold"
-        >
-          Start Analysis
-        </button>
-      </div>
-    </div>
-  )
+  const [error, setError] = useState(null)
+
+  function handleSubmit(brief) {
+    setError(null)
+    onNext(brief)
+  }
+
+  return <BriefForm onSubmit={handleSubmit} onBack={onBack} error={error} />
 }
 
-function AnalysisStep({ onNext, onBack }) {
-  return (
-    <div className="flex flex-col items-center gap-6 py-16">
-      <h2 className="text-2xl font-bold text-gray-800">Analysing Footage</h2>
-      <p className="text-gray-500 max-w-md text-center">
-        The AI is reviewing your clips, transcribing audio, and building an edit plan.
-        This takes a few minutes.
-      </p>
-      <div className="w-full max-w-lg bg-gray-100 rounded-xl p-6 font-mono text-sm text-gray-600 space-y-1 min-h-32">
-        <p>⏳ Generating proxies…</p>
-        <p className="text-gray-400">⏳ Transcribing audio…</p>
-        <p className="text-gray-400">⏳ Analysing clips (Pass 1)…</p>
-        <p className="text-gray-400">⏳ Planning edit (Pass 2)…</p>
+function AnalysisStep({ projectId, brief, onNext }) {
+  if (!brief) {
+    return (
+      <div className="py-16 text-center text-gray-500">
+        No brief found — go back and fill in the story brief.
       </div>
-      <button
-        onClick={onNext}
-        className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-semibold"
-      >
-        View Edit Plan (demo)
-      </button>
-    </div>
-  )
+    )
+  }
+  return <AnalysisProgress projectId={projectId} brief={brief} onNext={onNext} />
 }
 
 function ReviewStep({ onNext, onBack }) {
@@ -176,11 +136,10 @@ function ExportStep({ onBack }) {
   )
 }
 
-const STEP_COMPONENTS = [UploadStep, BriefStep, AnalysisStep, ReviewStep, ExportStep]
-
 export default function App() {
   const [step, setStep] = useState(1)
   const [projectId, setProjectId] = useState(null)
+  const [brief, setBrief] = useState(null)
   const creatingProject = useRef(false)
 
   useEffect(() => {
@@ -189,7 +148,14 @@ export default function App() {
     api.createProject('New Project').then((project) => setProjectId(project.id))
   }, [])
 
-  const StepComponent = STEP_COMPONENTS[step - 1]
+  function goNext(data) {
+    if (step === 2 && data) setBrief(data)
+    setStep((s) => Math.min(s + 1, STEPS.length))
+  }
+
+  function goBack() {
+    setStep((s) => Math.max(s - 1, 1))
+  }
 
   return (
     <div className="min-h-screen bg-white">
@@ -200,11 +166,11 @@ export default function App() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6">
-        <StepComponent
-          projectId={projectId}
-          onNext={() => setStep((s) => Math.min(s + 1, STEPS.length))}
-          onBack={() => setStep((s) => Math.max(s - 1, 1))}
-        />
+        {step === 1 && <UploadStep projectId={projectId} onNext={goNext} onBack={goBack} />}
+        {step === 2 && <BriefStep onNext={goNext} onBack={goBack} />}
+        {step === 3 && <AnalysisStep projectId={projectId} brief={brief} onNext={goNext} />}
+        {step === 4 && <ReviewStep onNext={goNext} onBack={goBack} />}
+        {step === 5 && <ExportStep onBack={goBack} />}
       </main>
     </div>
   )

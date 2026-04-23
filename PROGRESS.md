@@ -66,7 +66,7 @@ memory of prior sessions — depend on this being specific and accurate.
 | 4 | ✅ Done | Pipeline: Pass 1 | `pipeline/pass1_clip_analysis.py` (frames + Claude call) |
 | 5 | ✅ Done | Pipeline: Filler + B-roll | `pipeline/filler_removal.py`, `pipeline/broll_overlay.py` |
 | 6 | ✅ Done (partial) | Pipeline: Pass 2 | `pipeline/pass2_edit_planning.py` (sound_design.py deferred to Stage 4) |
-| 7 | | Pipeline: Assembly | `pipeline/assembly.py` |
+| 7 | ✅ Done | Pipeline: Assembly + Routes: Assemble + Frontend Brief/Analysis | `pipeline/assembly.py`, `routes/assemble.py`, `BriefForm.jsx`, `AnalysisProgress.jsx` |
 | 8 | ✅ Done (partial) | Routes: Analyze + Assemble | `routes/analyze.py` done; `routes/assemble.py` next |
 | 9 | ✅ Done (merged into 1) | Frontend: Scaffold | merged with Session 1 |
 | 10 | | Frontend: Upload + Brief | `components/upload/`, `components/brief/` |
@@ -319,6 +319,41 @@ cd frontend && npx tauri dev
 1. Build `backend/pipeline/assembly.py` — concat all `segments/` files (with B-roll applied) into `outputs/output.mp4` using FFmpeg `concat` demuxer; write tests
 2. Build `backend/routes/assemble.py` — `POST /api/projects/{id}/assemble` + `GET /api/projects/{id}/plans` + `POST /api/projects/{id}/plans/{plan_id}/approve`; approve sets `EditPlan.status=approved` and triggers assembly
 3. Wire frontend Step 3 (Brief) → Step 4 (Analysis SSE progress view) to the new `/analyze` endpoint
+
+---
+
+### Session 7 — 2026-04-23
+
+#### Completed
+
+- `backend/pipeline/assembly.py` — `assemble(plan, clips_by_id, project_id, base_dir) -> Path`: parses `EditPlan.segments` (JSON), sorts by order, runs each through `remove_fillers` → `apply_broll`, writes an FFmpeg concat list, runs `ffmpeg -f concat -safe 0 -c copy` to produce `outputs/output.mp4`; raises `AssemblyError` on FFmpeg failure, `ClipNotFoundError` for missing clips
+- `backend/tests/test_pipeline_assembly.py` — 7 tests: unit (empty segments, missing clip, ordering guarantee) + integration (single segment, two-segment concat with duration check); all pass
+- `backend/routes/assemble.py` — three endpoints: `GET /projects/{id}/edit-plan` (latest plan), `POST /projects/{id}/edit-plan/approve` (approve/reject with 409 guard on non-draft), `POST /projects/{id}/assemble` (SSE stream: assembling → done/error, pipeline lock, ProjectStatus transitions)
+- `backend/main.py` — registered `assemble_router` under `/api`
+- `backend/tests/test_routes_assemble.py` — 13 tests: GET plan (404 no project, 404 no plan, returns plan), approve (404 variants, approve sets approved_at, reject keeps approved_at null, 409 on non-draft), assemble SSE (404 no project, 409 no approved plan, lock emits error, happy path emits done, lock released on success + error); all pass
+- `frontend/src/api/client.js` — added `analyzeStream(projectId, brief, onEvent, signal)` and `assembleStream(projectId, onEvent, signal)` using fetch + ReadableStream for POST SSE; updated `startAnalysis` to pass brief body
+- `frontend/src/components/brief/BriefForm.jsx` — controlled form for title / story_summary / target_duration_seconds / tone; validates all fields before enabling submit; calls `onSubmit(brief)` with clean data
+- `frontend/src/components/analysis/AnalysisProgress.jsx` — opens `analyzeStream` on mount with AbortController; shows ordered stage list (proxying → transcribing → analyzing → planning → done) with spinner/checkmark/pending states; progress bar; auto-advances via `onNext()` 800ms after done event; error banner on failure
+- `frontend/src/App.jsx` — added `brief` state; `goNext(data)` captures brief when leaving Step 2; replaced inline placeholder `BriefStep` and `AnalysisStep` bodies with `<BriefForm>` and `<AnalysisProgress>`; step rendering switched from `STEP_COMPONENTS` array to explicit per-step JSX to support prop threading
+- All 113 tests pass
+
+#### Decisions made
+
+- `AssemblyError` extends `PipelineError` (not `FFmpegError`) — it has no `stderr` kwarg; FFmpeg stderr is embedded in the message string directly
+- Approval endpoint queries the most-recently-created plan (not a specific plan_id) — matches the client.js API shape already written; one project has one active plan at a time for v1
+- `POST /assemble` finds the most-recently-approved plan automatically — caller sends no body, backend selects it; simplifies the frontend
+- `analyzeStream` / `assembleStream` use fetch + ReadableStream rather than EventSource — EventSource is GET-only; both endpoints are POST with a body
+- `goNext(data)` in App.jsx accepts optional data and saves it as brief when leaving Step 2 — avoids prop drilling through all steps while keeping the pattern extensible
+
+#### Blockers / open questions
+
+- None
+
+#### Next session should
+
+1. Frontend: `components/timeline/` — ReviewStep showing actual EditPlan segments (fetched via `api.getEditPlan`), approve/reject buttons wired to `api.approveEditPlan`, rejection feedback textarea
+2. Frontend: `components/export/` — ExportStep wired to `api.assembleStream`, shows SSE progress, displays output path on done
+3. End-to-end smoke test: full 5-step flow from clip registration to assembled output.mp4
 
 ---
 
