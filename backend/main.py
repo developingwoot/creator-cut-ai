@@ -47,11 +47,13 @@ from routes.projects import router as projects_router
 from routes.upload import router as upload_router
 from routes.analyze import router as analyze_router
 from routes.assemble import router as assemble_router
+from routes.single_clip import router as single_clip_router
 
 app.include_router(projects_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(analyze_router, prefix="/api")
 app.include_router(assemble_router, prefix="/api")
+app.include_router(single_clip_router, prefix="/api")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

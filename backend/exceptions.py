@@ -65,6 +65,16 @@ class FrameExtractionError(FFmpegError):
     pass
 
 
+class SingleClipNotProcessedError(PipelineError):
+    """Single-clip apply was called before the process step completed."""
+    def __init__(self, clip_id: str):
+        super().__init__(
+            f"Clip {clip_id} has not been processed yet — run the process step first.",
+            stage="single_clip_apply",
+            clip_id=clip_id,
+        )
+
+
 class AssemblyError(PipelineError):
     """Final video assembly failed.
     Distinguish between segment-level failures and concat failures."""

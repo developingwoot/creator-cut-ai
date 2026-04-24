@@ -38,6 +38,33 @@ export class ApiError extends Error {
   }
 }
 
+// ── SSE helper ────────────────────────────────────────────────────────────────
+
+async function _streamSse(url, fetchOpts, onEvent) {
+  const res = await fetch(url, fetchOpts)
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}))
+    throw new ApiError(json.detail || `HTTP ${res.status}`, res.status)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const chunks = buffer.split('\n\n')
+      buffer = chunks.pop()
+      for (const chunk of chunks) {
+        if (chunk.startsWith('data: ')) onEvent(JSON.parse(chunk.slice(6)))
+      }
+    }
+  } finally {
+    reader.cancel()
+  }
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -81,67 +108,35 @@ export const api = {
   approveEditPlan: (projectId, approved, feedback = null) =>
     request('POST', `/projects/${projectId}/edit-plan/approve`, { approved, feedback }),
 
-  // Fetch-based SSE for POST /analyze — caller receives events via onEvent callback.
-  // Pass an AbortSignal to cancel. Returns a promise that resolves when the stream ends.
-  analyzeStream: async (projectId, brief, onEvent, signal) => {
-    const res = await fetch(`${BASE}/projects/${projectId}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(brief),
-      signal,
-    })
-    if (!res.ok) {
-      const json = await res.json().catch(() => ({}))
-      throw new ApiError(json.detail || `HTTP ${res.status}`, res.status)
-    }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const chunks = buffer.split('\n\n')
-        buffer = chunks.pop()
-        for (const chunk of chunks) {
-          if (chunk.startsWith('data: ')) onEvent(JSON.parse(chunk.slice(6)))
-        }
-      }
-    } finally {
-      reader.cancel()
-    }
-  },
+  // Workflow 1: SSE streams
+  analyzeStream: (projectId, brief, onEvent, signal) =>
+    _streamSse(
+      `${BASE}/projects/${projectId}/analyze`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(brief), signal },
+      onEvent,
+    ),
 
-  // Fetch-based SSE for POST /assemble.
-  assembleStream: async (projectId, onEvent, signal) => {
-    const res = await fetch(`${BASE}/projects/${projectId}/assemble`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-    })
-    if (!res.ok) {
-      const json = await res.json().catch(() => ({}))
-      throw new ApiError(json.detail || `HTTP ${res.status}`, res.status)
-    }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const chunks = buffer.split('\n\n')
-        buffer = chunks.pop()
-        for (const chunk of chunks) {
-          if (chunk.startsWith('data: ')) onEvent(JSON.parse(chunk.slice(6)))
-        }
-      }
-    } finally {
-      reader.cancel()
-    }
-  },
+  assembleStream: (projectId, onEvent, signal) =>
+    _streamSse(
+      `${BASE}/projects/${projectId}/assemble`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal },
+      onEvent,
+    ),
+
+  // Workflow 2: single-clip SSE streams
+  singleClipProcessStream: (projectId, onEvent, signal) =>
+    _streamSse(
+      `${BASE}/projects/${projectId}/single-clip/process`,
+      { method: 'POST', signal },
+      onEvent,
+    ),
+
+  singleClipApplyStream: (projectId, body, onEvent, signal) =>
+    _streamSse(
+      `${BASE}/projects/${projectId}/single-clip/apply`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal },
+      onEvent,
+    ),
 }
 
 export default api

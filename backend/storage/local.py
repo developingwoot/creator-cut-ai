@@ -80,6 +80,10 @@ def output_path(base_dir: Path, project_id: str, filename: str = "output.mp4") -
     return outputs_dir(base_dir, project_id) / filename
 
 
+def single_clip_output_path(base_dir: Path, project_id: str, clip_id: str) -> Path:
+    return outputs_dir(base_dir, project_id) / f"{clip_id}_edited.mp4"
+
+
 # ── Directory initialisation ──────────────────────────────────────────────────
 
 def ensure_project_dirs(base_dir: Path, project_id: str) -> None:

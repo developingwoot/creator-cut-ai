@@ -18,6 +18,7 @@ class ClipStatus(str, Enum):
     transcribed = "transcribed"
     analyzing = "analyzing"
     analyzed = "analyzed"
+    sc_ready = "sc_ready"
     failed = "failed"
 
 
@@ -71,6 +72,19 @@ class ClipAnalysis(BaseModel):
     @classmethod
     def _clamp_quality(cls, v: float) -> float:
         return max(0.0, min(1.0, v))
+
+
+class SilenceSpan(BaseModel):
+    start: float
+    end: float
+
+
+class SingleClipAnalysis(BaseModel):
+    """Output of the single-clip processing pipeline — stored as clip.analysis."""
+    filler_spans: list[FillerSpan] = []
+    silence_spans: list[SilenceSpan] = []
+    rename_suggestions: list[str] = []
+    full_transcript_text: str = ""
 
 
 class ClipRead(BaseModel):
