@@ -132,7 +132,6 @@ _PIPELINE_PATCHES = [
     "routes.analyze.transcribe_clip",
     "routes.analyze.run_pass1",
     "routes.analyze.run_pass2",
-    "routes.analyze.key_manager",
 ]
 
 
@@ -163,10 +162,8 @@ class TestAnalyzePipelineStream:
             patch("routes.analyze.generate_proxy", return_value=proxy_file),
             patch("routes.analyze.transcribe_clip", return_value={"segments": []}),
             patch("routes.analyze.run_pass1", side_effect=_make_fake_pass1(project_id, clip_id, analysis)),
-            patch("routes.analyze.run_pass2", return_value=_make_edit_plan(project_id)),
-            patch("routes.analyze.key_manager") as mock_km,
+            patch("routes.analyze.run_pass2", new=AsyncMock(return_value=_make_edit_plan(project_id))),
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 resp = client.post(f"/api/projects/{project_id}/analyze", json=_make_brief())
 
@@ -189,10 +186,8 @@ class TestAnalyzePipelineStream:
             patch("routes.analyze.generate_proxy", return_value=proxy_file),
             patch("routes.analyze.transcribe_clip", return_value={"segments": []}),
             patch("routes.analyze.run_pass1", side_effect=_make_fake_pass1(project_id, clip_id, analysis)),
-            patch("routes.analyze.run_pass2", return_value=_make_edit_plan(project_id)),
-            patch("routes.analyze.key_manager") as mock_km,
+            patch("routes.analyze.run_pass2", new=AsyncMock(return_value=_make_edit_plan(project_id))),
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 resp = client.post(f"/api/projects/{project_id}/analyze", json=_make_brief())
 
@@ -231,10 +226,8 @@ class TestAnalyzePipelineStream:
             patch("routes.analyze.generate_proxy", return_value=proxy_file),
             patch("routes.analyze.transcribe_clip", return_value={"segments": []}),
             patch("routes.analyze.run_pass1", side_effect=_make_fake_pass1(project_id, clip_id, _make_analysis())),
-            patch("routes.analyze.run_pass2", return_value=_make_edit_plan(project_id)),
-            patch("routes.analyze.key_manager") as mock_km,
+            patch("routes.analyze.run_pass2", new=AsyncMock(return_value=_make_edit_plan(project_id))),
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 client.post(f"/api/projects/{project_id}/analyze", json=_make_brief())
 
@@ -254,9 +247,7 @@ class TestAnalyzePipelineStream:
             patch("routes.analyze.generate_proxy", return_value=proxy_file),
             patch("routes.analyze.transcribe_clip", return_value={"segments": []}),
             patch("routes.analyze.run_pass1", side_effect=fail_pass1),
-            patch("routes.analyze.key_manager") as mock_km,
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 resp = client.post(f"/api/projects/{project_id}/analyze", json=_make_brief())
 

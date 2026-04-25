@@ -71,6 +71,16 @@ export const api = {
   // Health
   health: () => request('GET', '/health'),
 
+  // Models / first-run setup
+  getModelStatus: () => request('GET', '/models/status'),
+  getModelTier: () => request('GET', '/models/tier'),
+  pullModel: (model, onEvent, signal) =>
+    _streamSse(
+      `/api/models/pull`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }), signal },
+      onEvent,
+    ),
+
   // Projects
   createProject: (name, brief = null) =>
     request('POST', '/projects', { name, brief }),

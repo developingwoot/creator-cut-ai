@@ -10,7 +10,7 @@ from loguru import logger
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from exceptions import APIKeyMissingError, FFmpegNotFoundError
+from exceptions import APIKeyMissingError, FFmpegNotFoundError, OllamaUnreachableError
 
 
 class Settings(BaseSettings):
@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     whisper_model: str = "medium"
     max_concurrent: int = 5
     log_level: str = "INFO"
+
+    # Ollama local inference settings
+    ollama_host: str = "http://127.0.0.1:11434"
+    ollama_llm_model: str = "qwen2.5:7b-instruct"
+    ollama_vlm_model: str = "qwen2.5vl:7b"
+
+    # Cloud fallback — when True, Anthropic API is used instead of Ollama
+    cloud_fallback: bool = False
 
     # Anthropic key is read separately via KeyManager — not in Settings —
     # because it may come from the OS keychain, not just env vars.
@@ -147,13 +155,16 @@ def validate_startup(settings: Settings, key_manager: KeyManager) -> None:
         logger.error("[FAIL] FFmpeg not found — install it and re-run")
         errors.append("ffmpeg")
 
-    # Anthropic API key
-    try:
-        key_manager.get_key()
-        logger.info("[OK] API key configured")
-    except APIKeyMissingError:
-        logger.error("[FAIL] Anthropic API key not configured — set ANTHROPIC_API_KEY or run setup")
-        errors.append("api_key")
+    # Anthropic API key — only required when cloud_fallback is enabled
+    if settings.cloud_fallback:
+        try:
+            key_manager.get_key()
+            logger.info("[OK] Anthropic API key configured (cloud fallback active)")
+        except APIKeyMissingError:
+            logger.error("[FAIL] Cloud fallback enabled but ANTHROPIC_API_KEY not configured")
+            errors.append("api_key")
+    else:
+        logger.info("[OK] Using Ollama for inference (cloud fallback disabled)")
 
     # Database directory
     db_path = settings.base_dir / "projects.db"

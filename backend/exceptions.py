@@ -65,6 +65,36 @@ class FrameExtractionError(FFmpegError):
     pass
 
 
+class OllamaUnreachableError(PipelineError):
+    """Ollama HTTP server is not reachable at the configured host.
+    Raised after auto-spawn attempt fails or connection is refused."""
+    def __init__(self, host: str = "http://127.0.0.1:11434"):
+        self.host = host
+        super().__init__(
+            f"Ollama is not reachable at {host}. "
+            f"Install Ollama from https://ollama.com/download and ensure it is running.",
+            stage="ollama",
+        )
+
+
+class OllamaModelMissingError(PipelineError):
+    """A required Ollama model is not installed locally."""
+    def __init__(self, model: str):
+        self.model = model
+        super().__init__(
+            f"Ollama model '{model}' is not installed. "
+            f"Pull it with: ollama pull {model}",
+            stage="ollama",
+        )
+
+
+class InvalidOllamaResponseError(PipelineError):
+    """Ollama returned a response that failed JSON parsing or Pydantic validation."""
+    def __init__(self, message: str, raw_response: str | None = None, **kwargs):
+        self.raw_response = raw_response
+        super().__init__(message, **kwargs)
+
+
 class SingleClipNotProcessedError(PipelineError):
     """Single-clip apply was called before the process step completed."""
     def __init__(self, clip_id: str):

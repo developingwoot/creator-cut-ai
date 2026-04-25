@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from config import key_manager, settings, validate_startup
+from pipeline import ollama_client
+from pipeline.ollama_lifecycle import ensure_running
 from storage.database import create_tables
 from storage.local import db_path
 
@@ -21,8 +23,13 @@ async def lifespan(app: FastAPI):
     logger.info("CreatorCutAI starting up...")
     validate_startup(settings, key_manager)
     create_tables(db_path(settings.base_dir))
+    try:
+        await ensure_running()
+    except Exception as exc:
+        logger.warning("Ollama not available at startup: {} — setup screen will be shown", exc)
     logger.info("Startup complete.")
     yield
+    await ollama_client.close_client()
     logger.info("CreatorCutAI shutting down.")
 
 
@@ -43,12 +50,14 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
+from routes.models import router as models_router
 from routes.projects import router as projects_router
 from routes.upload import router as upload_router
 from routes.analyze import router as analyze_router
 from routes.assemble import router as assemble_router
 from routes.single_clip import router as single_clip_router
 
+app.include_router(models_router)
 app.include_router(projects_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(analyze_router, prefix="/api")

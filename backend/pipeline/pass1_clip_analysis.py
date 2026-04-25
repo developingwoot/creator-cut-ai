@@ -6,18 +6,25 @@ import json
 from pathlib import Path
 from typing import Any
 
-import anthropic
 import ffmpeg
 from loguru import logger
 from pydantic import ValidationError
 
+import anthropic
+
 from config import key_manager, settings
-from exceptions import ClaudeAPIError, FrameExtractionError, InvalidClaudeResponseError
+from exceptions import (
+    ClaudeAPIError,
+    FrameExtractionError,
+    InvalidClaudeResponseError,
+    InvalidOllamaResponseError,
+    OllamaUnreachableError,
+)
 from models.clip import Clip, ClipAnalysis, ClipStatus
+from pipeline import ollama_client
 from pipeline.prompts import PASS1_SYSTEM_PROMPT
 from storage.local import ensure_project_dirs, frames_subdir
 
-_MODEL = "claude-sonnet-4-6"
 _MAX_FRAMES = 12
 _SCENE_THRESHOLD = 0.3
 _MAX_RETRIES = 2
@@ -35,16 +42,13 @@ def extract_frames(
     """Extract up to max_frames JPEG frames from proxy using scene-change detection.
 
     Falls back to uniform sampling if scene detection yields no frames.
-    Returns a sorted list of frame paths (at most max_frames).
-
     Raises FrameExtractionError (with FFmpeg stderr) on failure.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     scene_frames = _extract_scene_frames(proxy, out_dir, scene_threshold)
-
     if not scene_frames:
-        logger.debug("no scene-change frames found for {}, falling back to uniform sampling", proxy.name)
+        logger.debug("no scene-change frames for {}, falling back to uniform sampling", proxy.name)
         scene_frames = _extract_uniform_frames(proxy, out_dir, max_frames)
 
     return _downsample(scene_frames, max_frames)
@@ -105,7 +109,7 @@ def _downsample(frames: list[Path], max_frames: int) -> list[Path]:
     return [frames[i] for i in sorted(indices)]
 
 
-# ── Claude interaction ────────────────────────────────────────────────────────
+# ── Prompt building ───────────────────────────────────────────────────────────
 
 
 def _transcript_text(transcript: dict[str, Any] | None) -> str:
@@ -114,11 +118,36 @@ def _transcript_text(transcript: dict[str, Any] | None) -> str:
     return " ".join(seg["text"].strip() for seg in transcript["segments"] if seg.get("text"))
 
 
-def _build_user_content(
+def _build_prompt(
     frame_paths: list[Path],
     transcript: dict[str, Any] | None,
     duration_seconds: float | None,
-) -> list[dict]:
+) -> tuple[str, list[str]]:
+    """Return (prompt_text, base64_images) for Ollama /api/generate."""
+    duration = duration_seconds or 0.0
+    prompt = (
+        f"{PASS1_SYSTEM_PROMPT}\n\n"
+        f"Clip duration: {duration:.1f} seconds\n"
+        f"Transcript:\n{_transcript_text(transcript)}\n\n"
+        f"Analyse the {len(frame_paths)} frame(s) below and return the JSON."
+    )
+    images = [base64.b64encode(p.read_bytes()).decode() for p in frame_paths]
+    return prompt, images
+
+
+# ── Ollama interaction ────────────────────────────────────────────────────────
+
+
+async def _call_anthropic_vlm_with_retry(
+    frame_paths: list[Path],
+    transcript: dict[str, Any] | None,
+    duration_seconds: float | None,
+    clip_id: str,
+) -> ClipAnalysis:
+    """Cloud-fallback path: call Anthropic Claude with cached system prompt."""
+    import json as _json
+    from pydantic import ValidationError as _VE
+
     duration = duration_seconds or 0.0
     text_block: dict = {
         "type": "text",
@@ -129,55 +158,76 @@ def _build_user_content(
         ),
     }
     image_blocks = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": base64.b64encode(p.read_bytes()).decode(),
-            },
-        }
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                     "data": base64.b64encode(p.read_bytes()).decode()}}
         for p in frame_paths
     ]
-    return [text_block, *image_blocks]
+    user_content = [text_block, *image_blocks]
 
-
-def _call_claude_with_retry(
-    client: anthropic.Anthropic,
-    user_content: list[dict],
-    clip_id: str,
-) -> ClipAnalysis:
+    client = anthropic.Anthropic(api_key=key_manager.get_key())
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 2):
         try:
             response = client.messages.create(
-                model=_MODEL,
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
-                system=[
-                    {
-                        "type": "text",
-                        "text": PASS1_SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
+                system=[{"type": "text", "text": PASS1_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_content}],
             )
             raw = response.content[0].text
-            data = json.loads(raw)
+            data = _json.loads(raw)
             return ClipAnalysis.model_validate(data)
-        except (json.JSONDecodeError, ValidationError) as exc:
-            logger.warning("clip {} attempt {}: bad Claude response — {}", clip_id, attempt, exc)
+        except (_json.JSONDecodeError, _VE) as exc:
+            logger.warning("clip {} cloud attempt {}: bad response — {}", clip_id, attempt, exc)
             last_exc = InvalidClaudeResponseError(
-                f"Claude returned invalid JSON/schema for clip {clip_id} (attempt {attempt})",
+                f"Cloud response invalid for clip {clip_id} (attempt {attempt})",
                 raw_response=locals().get("raw"),
                 attempts=attempt,
                 clip_id=clip_id,
             )
         except anthropic.APIError as exc:
-            logger.warning("clip {} attempt {}: Anthropic API error — {}", clip_id, attempt, exc)
+            logger.warning("clip {} cloud attempt {}: API error — {}", clip_id, attempt, exc)
             last_exc = ClaudeAPIError(
-                f"Anthropic API error for clip {clip_id} (attempt {attempt}): {exc}",
+                f"Anthropic error for clip {clip_id} (attempt {attempt}): {exc}",
                 attempts=attempt,
+                clip_id=clip_id,
+            )
+    raise last_exc  # type: ignore[misc]
+
+
+async def _call_ollama_vlm_with_retry(
+    prompt: str,
+    images: list[str],
+    clip_id: str,
+) -> ClipAnalysis:
+    last_exc: Exception | None = None
+    model = settings.ollama_vlm_model
+
+    for attempt in range(1, _MAX_RETRIES + 2):
+        try:
+            raw = await ollama_client.generate(
+                model=model,
+                prompt=prompt,
+                images=images,
+                fmt="json",
+            )
+            data = json.loads(raw)
+            return ClipAnalysis.model_validate(data)
+        except OllamaUnreachableError:
+            raise
+        except (json.JSONDecodeError, ValidationError) as exc:
+            logger.warning("clip {} attempt {}: bad Ollama response — {}", clip_id, attempt, exc)
+            last_exc = InvalidOllamaResponseError(
+                f"Ollama returned invalid JSON/schema for clip {clip_id} (attempt {attempt})",
+                raw_response=locals().get("raw"),
+                stage="pass1",
+                clip_id=clip_id,
+            )
+        except Exception as exc:
+            logger.warning("clip {} attempt {}: Ollama error — {}", clip_id, attempt, exc)
+            last_exc = InvalidOllamaResponseError(
+                f"Ollama error for clip {clip_id} (attempt {attempt}): {exc}",
+                stage="pass1",
                 clip_id=clip_id,
             )
 
@@ -187,23 +237,19 @@ def _call_claude_with_retry(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def analyse_clip(
+async def analyse_clip(
     clip: Clip,
     project_id: str,
     base_dir: Path,
-    client: anthropic.Anthropic | None = None,
 ) -> ClipAnalysis:
-    """Run Pass 1 analysis for a single clip.
+    """Run Pass 1 analysis for a single clip via Ollama VLM.
 
-    Extracts frames from clip.proxy_path, calls Claude, validates the response.
-    Updates clip.status in-place. The caller is responsible for persisting the clip.
+    Extracts frames from clip.proxy_path, calls the local VLM, validates the response.
+    Updates clip.status in-place. The caller persists the clip.
 
-    Raises InvalidClaudeResponseError or ClaudeAPIError after exhausting retries.
+    Raises InvalidOllamaResponseError after retries exhausted.
     Raises FrameExtractionError if FFmpeg frame extraction fails.
     """
-    if client is None:
-        client = anthropic.Anthropic(api_key=key_manager.get_key())
-
     ensure_project_dirs(base_dir, project_id)
     out_dir = frames_subdir(base_dir, project_id, clip.id)
 
@@ -224,8 +270,14 @@ def analyse_clip(
             clip_id=clip.id,
         )
 
-    user_content = _build_user_content(frame_paths, clip.transcript, clip.duration_seconds)
-    analysis = _call_claude_with_retry(client, user_content, clip.id)
+    if settings.cloud_fallback:
+        logger.debug("pass1: using cloud fallback for clip {}", clip.id)
+        analysis = await _call_anthropic_vlm_with_retry(
+            frame_paths, clip.transcript, clip.duration_seconds, clip.id
+        )
+    else:
+        prompt, images = _build_prompt(frame_paths, clip.transcript, clip.duration_seconds)
+        analysis = await _call_ollama_vlm_with_retry(prompt, images, clip.id)
 
     clip.status = ClipStatus.analyzed
     logger.info("pass1: clip {} done — quality={:.2f}", clip.id, analysis.quality_score)
@@ -236,26 +288,18 @@ async def run_pass1(
     clips: list[Clip],
     project_id: str,
     base_dir: Path,
-    client: anthropic.Anthropic | None = None,
 ) -> list[tuple[Clip, ClipAnalysis | None]]:
     """Analyse all clips concurrently, bounded by settings.max_concurrent.
 
     Returns a list of (clip, analysis) pairs.
-    On per-clip failure the clip status is set to failed, analysis is None, and
-    processing continues for the remaining clips.
+    On per-clip failure the clip status is set to failed; processing continues.
     """
-    if client is None:
-        client = anthropic.Anthropic(api_key=key_manager.get_key())
-
     sem = asyncio.Semaphore(settings.max_concurrent)
-    results: list[tuple[Clip, ClipAnalysis | None]] = []
 
     async def _analyse_one(clip: Clip) -> tuple[Clip, ClipAnalysis | None]:
         async with sem:
             try:
-                analysis = await asyncio.to_thread(
-                    analyse_clip, clip, project_id, base_dir, client
-                )
+                analysis = await analyse_clip(clip, project_id, base_dir)
                 return clip, analysis
             except Exception as exc:
                 logger.error("pass1: clip {} failed — {}", clip.id, exc)
@@ -264,5 +308,4 @@ async def run_pass1(
                 return clip, None
 
     pairs = await asyncio.gather(*[_analyse_one(c) for c in clips])
-    results.extend(pairs)
-    return results
+    return list(pairs)

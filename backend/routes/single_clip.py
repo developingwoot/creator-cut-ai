@@ -5,14 +5,13 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import anthropic
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from config import key_manager, settings
+from config import settings
 from exceptions import PipelineError, SingleClipNotProcessedError
 from models.clip import Clip, ClipStatus, SingleClipAnalysis
 from models.project import Project
@@ -166,10 +165,7 @@ async def _process_stream(
         segments = transcript.get("segments", [])
         transcript_text = " ".join(s["text"] for s in segments).strip()
 
-        client = anthropic.Anthropic(api_key=key_manager.get_key())
-        rename_suggestions = await asyncio.to_thread(
-            suggest_renames, transcript_text, clip.filename, client
-        )
+        rename_suggestions = await suggest_renames(transcript_text, clip.filename)
 
         # ── Persist analysis ──────────────────────────────────────────────────
         analysis = SingleClipAnalysis(

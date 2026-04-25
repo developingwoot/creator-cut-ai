@@ -10,6 +10,7 @@ import SC_UploadStep from './components/single_clip/SC_UploadStep'
 import SC_ProcessStep from './components/single_clip/SC_ProcessStep'
 import SC_ReviewStep from './components/single_clip/SC_ReviewStep'
 import SC_DoneStep from './components/single_clip/SC_DoneStep'
+import ModelDownloadStep from './components/setup/ModelDownloadStep'
 
 const MOVIE_STEPS = [
   { id: 1, label: 'Upload' },
@@ -124,6 +125,9 @@ function AnalysisStep({ projectId, brief, onNext, onBack }) {
 }
 
 export default function App() {
+  // ── First-run model gate ──────────────────────────────────────────────────
+  const [modelsReady, setModelsReady] = useState(false)
+
   // ── Shared state ──────────────────────────────────────────────────────────
   const [workflowMode, setWorkflowMode] = useState(null) // null | 'movie' | 'single_clip'
   const [projectId, setProjectId] = useState(null)
@@ -185,6 +189,20 @@ export default function App() {
 
   function goBack() {
     setStep((s) => Math.max(s - 1, 1))
+  }
+
+  if (!modelsReady) {
+    return (
+      <div className="min-h-screen bg-white">
+        <header className="border-b bg-white px-6 py-4 flex items-center justify-between shadow-sm">
+          <span className="font-bold text-xl text-indigo-600 tracking-tight">CreatorCutAI</span>
+          <div /><div />
+        </header>
+        <main className="max-w-3xl mx-auto px-6">
+          <ModelDownloadStep onReady={() => setModelsReady(true)} />
+        </main>
+      </div>
+    )
   }
 
   return (

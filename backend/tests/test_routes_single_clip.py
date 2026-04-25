@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -124,10 +124,8 @@ class TestProcessStream:
             patch("routes.single_clip.transcribe_clip_with_words", return_value=transcript),
             patch("routes.single_clip.detect_fillers_from_words", return_value=[]),
             patch("routes.single_clip.detect_silence", return_value=[]),
-            patch("routes.single_clip.suggest_renames", return_value=["A", "B", "C"]),
-            patch("routes.single_clip.key_manager") as mock_km,
+            patch("routes.single_clip.suggest_renames", new=AsyncMock(return_value=["A", "B", "C"])),
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 resp = client.post(f"/api/projects/{project_id}/single-clip/process")
 
@@ -153,10 +151,8 @@ class TestProcessStream:
             patch("routes.single_clip.transcribe_clip_with_words", return_value=transcript),
             patch("routes.single_clip.detect_fillers_from_words", return_value=filler),
             patch("routes.single_clip.detect_silence", return_value=[]),
-            patch("routes.single_clip.suggest_renames", return_value=["A", "B", "C"]),
-            patch("routes.single_clip.key_manager") as mock_km,
+            patch("routes.single_clip.suggest_renames", new=AsyncMock(return_value=["A", "B", "C"])),
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 resp = client.post(f"/api/projects/{project_id}/single-clip/process")
 
@@ -179,10 +175,8 @@ class TestProcessStream:
             patch("routes.single_clip.transcribe_clip_with_words", return_value=transcript),
             patch("routes.single_clip.detect_fillers_from_words", return_value=[]),
             patch("routes.single_clip.detect_silence", return_value=[]),
-            patch("routes.single_clip.suggest_renames", return_value=["A", "B", "C"]),
-            patch("routes.single_clip.key_manager") as mock_km,
+            patch("routes.single_clip.suggest_renames", new=AsyncMock(return_value=["A", "B", "C"])),
         ):
-            mock_km.get_key.return_value = "sk-ant-test"
             with TestClient(app) as client:
                 client.post(f"/api/projects/{project_id}/single-clip/process")
 

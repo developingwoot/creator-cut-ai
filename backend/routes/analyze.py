@@ -5,13 +5,12 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import anthropic
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlmodel import Session, select
 
-from config import key_manager, settings
+from config import settings
 from exceptions import PipelineError
 from models.clip import Clip, ClipAnalysis, ClipStatus
 from models.edit_plan import EditPlan
@@ -161,8 +160,7 @@ async def _pipeline_stream(
 
         # ── Stage 2: Pass 1 — per-clip analysis ──────────────────────────────
         yield _emit("analyzing", progress=0.4, message="Analysing clips with AI…")
-        client = anthropic.Anthropic(api_key=key_manager.get_key())
-        pass1_results = await run_pass1(proxied_clips, project_id, base_dir, client=client)
+        pass1_results = await run_pass1(proxied_clips, project_id, base_dir)
 
         successful: list[tuple[Clip, ClipAnalysis]] = []
         for idx, (clip, analysis) in enumerate(pass1_results):
@@ -184,9 +182,7 @@ async def _pipeline_stream(
         _set_project_status(engine, project_id, ProjectStatus.planning)
         yield _emit("planning", progress=0.75, message="Generating edit plan…")
 
-        edit_plan: EditPlan = await asyncio.to_thread(
-            run_pass2, successful, brief, project_id, base_dir, client
-        )
+        edit_plan: EditPlan = await run_pass2(successful, brief, project_id, base_dir)
 
         with Session(engine) as s:
             s.add(edit_plan)

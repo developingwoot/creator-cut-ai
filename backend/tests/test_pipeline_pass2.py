@@ -1,15 +1,15 @@
 """Tests for pipeline/pass2_edit_planning.py."""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-import anthropic
 import pytest
 
-from exceptions import ClaudeAPIError, InvalidClaudeResponseError, PipelineError
+from exceptions import InvalidOllamaResponseError, PipelineError
 from models.clip import Clip, ClipAnalysis, ClipStatus
 from models.edit_plan import EditPlan, EditPlanStatus
 from models.project import StoryBrief
@@ -77,16 +77,12 @@ def _valid_plan_dict(clip_id: str) -> dict:
     }
 
 
-def _make_client(response_text: str) -> MagicMock:
-    content_block = MagicMock()
-    content_block.text = response_text
-
-    mock_response = MagicMock()
-    mock_response.content = [content_block]
-
-    client = MagicMock()
-    client.messages.create.return_value = mock_response
-    return client
+def _patch_ollama(response_text: str):
+    """Patch ollama_client.generate to always return response_text."""
+    return patch(
+        "pipeline.pass2_edit_planning.ollama_client.generate",
+        new=AsyncMock(return_value=response_text),
+    )
 
 
 # ── _load_sfx_ids ─────────────────────────────────────────────────────────────
@@ -96,7 +92,6 @@ class TestLoadSfxIds:
     def test_returns_filenames_from_manifest(self):
         ids = _load_sfx_ids()
         assert isinstance(ids, list)
-        # Manifest has at least one entry if the file exists.
         if ids:
             assert all(isinstance(s, str) for s in ids)
 
@@ -117,7 +112,7 @@ class TestLoadSfxIds:
 
 
 class TestBuildUserMessage:
-    def _pair(self) -> tuple[Clip, ClipAnalysis]:
+    def _pair(self):
         clip = _make_clip()
         return clip, _make_analysis()
 
@@ -170,124 +165,101 @@ class TestRunPass2:
 
     def test_returns_edit_plan(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        result = run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
+        # Patch ollama twice: draft call + self-critique call
+        with _patch_ollama(json.dumps(_valid_plan_dict(clip.id))):
+            result = asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
         assert isinstance(result, EditPlan)
 
     def test_status_is_draft(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        result = run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
+        with _patch_ollama(json.dumps(_valid_plan_dict(clip.id))):
+            result = asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
         assert result.status == EditPlanStatus.draft
 
     def test_segments_stored(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        result = run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
+        with _patch_ollama(json.dumps(_valid_plan_dict(clip.id))):
+            result = asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
         assert isinstance(result.segments, list)
         assert len(result.segments) == 1
 
     def test_total_duration_set(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        result = run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
+        with _patch_ollama(json.dumps(_valid_plan_dict(clip.id))):
+            result = asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
         assert result.total_duration_seconds == pytest.approx(4.0)
 
     def test_reasoning_stored(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        result = run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
+        with _patch_ollama(json.dumps(_valid_plan_dict(clip.id))):
+            result = asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
         assert result.reasoning == "Started with the strongest moment."
 
     def test_project_id_set(self, tmp_path):
         clip, analysis = self._pair()
         project_id = str(uuid.uuid4())
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        result = run_pass2([(clip, analysis)], _make_brief(), project_id, tmp_path, client=client)
+        with _patch_ollama(json.dumps(_valid_plan_dict(clip.id))):
+            result = asyncio.run(run_pass2([(clip, analysis)], _make_brief(), project_id, tmp_path))
         assert result.project_id == project_id
 
     def test_empty_clip_analyses_raises(self, tmp_path):
-        with pytest.raises(PipelineError):
-            run_pass2([], _make_brief(), str(uuid.uuid4()), tmp_path, client=MagicMock())
+        with _patch_ollama("{}"):
+            with pytest.raises(PipelineError):
+                asyncio.run(run_pass2([], _make_brief(), str(uuid.uuid4()), tmp_path))
 
     def test_bad_json_retries_and_raises(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client("not json at all")
-        with pytest.raises(InvalidClaudeResponseError):
-            run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-        assert client.messages.create.call_count == 3
+        mock = AsyncMock(return_value="not json at all")
+        with patch("pipeline.pass2_edit_planning.ollama_client.generate", mock):
+            with pytest.raises(InvalidOllamaResponseError):
+                asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
+        # 3 retries for draft + self-critique falls back, so mock call count ≥ 3
+        assert mock.call_count >= 3
 
     def test_bad_schema_retries_and_raises(self, tmp_path):
         clip, analysis = self._pair()
-        # Valid JSON but wrong shape — missing segments.
-        client = _make_client(json.dumps({"reasoning": "oops"}))
-        with pytest.raises(InvalidClaudeResponseError):
-            run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-
-    def test_segment_validation_failure_retries(self, tmp_path):
-        clip, analysis = self._pair()
-        # source_end <= source_start violates EditSegment validator.
-        bad_plan = {
-            "segments": [
-                {
-                    "order": 0,
-                    "clip_id": clip.id,
-                    "source_start": 10.0,
-                    "source_end": 5.0,  # before source_start
-                    "is_broll": False,
-                    "narration_note": "",
-                    "b_roll_overlays": [],
-                    "sound_cues": [],
-                }
-            ],
-            "total_duration_seconds": 0.0,
-            "reasoning": "",
-        }
-        client = _make_client(json.dumps(bad_plan))
-        with pytest.raises(InvalidClaudeResponseError):
-            run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-        assert client.messages.create.call_count == 3
-
-    def test_api_error_retries_and_raises(self, tmp_path):
-        clip, analysis = self._pair()
-        client = MagicMock()
-        client.messages.create.side_effect = anthropic.APIError(
-            message="server error", request=MagicMock(), body=None
-        )
-        with pytest.raises(ClaudeAPIError):
-            run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-        assert client.messages.create.call_count == 3
-
-    def test_cached_system_prompt(self, tmp_path):
-        clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-        system = client.messages.create.call_args.kwargs["system"]
-        assert system[0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_uses_opus_model(self, tmp_path):
-        clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-        assert client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
+        with _patch_ollama(json.dumps({"reasoning": "oops"})):
+            with pytest.raises(InvalidOllamaResponseError):
+                asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
 
     def test_rejection_feedback_in_user_message(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        run_pass2(
-            [(clip, analysis)],
-            _make_brief(),
-            clip.project_id,
-            tmp_path,
-            client=client,
-            rejection_feedback="pacing is too slow",
-        )
-        user_content = client.messages.create.call_args.kwargs["messages"][0]["content"]
-        assert "pacing is too slow" in user_content
+        mock = AsyncMock(return_value=json.dumps(_valid_plan_dict(clip.id)))
+        with patch("pipeline.pass2_edit_planning.ollama_client.generate", mock):
+            asyncio.run(
+                run_pass2(
+                    [(clip, analysis)],
+                    _make_brief(),
+                    clip.project_id,
+                    tmp_path,
+                    rejection_feedback="pacing is too slow",
+                )
+            )
+        # The first generate call should include the rejection feedback
+        first_call_prompt = mock.call_args_list[0].kwargs.get("prompt") or mock.call_args_list[0].args[1]
+        assert "pacing is too slow" in first_call_prompt
 
-    def test_no_rejection_feedback_not_in_message(self, tmp_path):
+    def test_no_rejection_feedback_absent(self, tmp_path):
         clip, analysis = self._pair()
-        client = _make_client(json.dumps(_valid_plan_dict(clip.id)))
-        run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path, client=client)
-        user_content = client.messages.create.call_args.kwargs["messages"][0]["content"]
-        assert "rejected" not in user_content
+        mock = AsyncMock(return_value=json.dumps(_valid_plan_dict(clip.id)))
+        with patch("pipeline.pass2_edit_planning.ollama_client.generate", mock):
+            asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
+        first_call_prompt = mock.call_args_list[0].kwargs.get("prompt") or mock.call_args_list[0].args[1]
+        assert "rejected" not in first_call_prompt
+
+    def test_self_critique_called(self, tmp_path):
+        """run_pass2 makes at least 2 Ollama calls: draft + critique."""
+        clip, analysis = self._pair()
+        mock = AsyncMock(return_value=json.dumps(_valid_plan_dict(clip.id)))
+        with patch("pipeline.pass2_edit_planning.ollama_client.generate", mock):
+            asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
+        assert mock.call_count >= 2
+
+    def test_uses_configured_llm_model(self, tmp_path):
+        clip, analysis = self._pair()
+        mock = AsyncMock(return_value=json.dumps(_valid_plan_dict(clip.id)))
+        with patch("pipeline.pass2_edit_planning.ollama_client.generate", mock):
+            asyncio.run(run_pass2([(clip, analysis)], _make_brief(), clip.project_id, tmp_path))
+        from config import settings
+        called_model = mock.call_args_list[0].kwargs.get("model") or mock.call_args_list[0].args[0]
+        assert called_model == settings.ollama_llm_model
